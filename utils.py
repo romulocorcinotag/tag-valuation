@@ -853,6 +853,145 @@ def compute_piotroski_score(df: pd.DataFrame) -> dict:
     return {"score": score, "details": details}
 
 
+def compute_credito_analysis(df: pd.DataFrame) -> pd.DataFrame:
+    """Calcula métricas focadas em análise de crédito: DSCR, Custo da Dívida, Amortização, etc."""
+    result = df[["data"]].copy()
+
+    # DSCR = FCO / Serviço da Dívida (Juros + Amortização)
+    interest_col = None
+    for col in ["Interest Expense", "Interest Expense Non Operating"]:
+        if col in df.columns:
+            interest_col = col
+            break
+
+    amort_col = None
+    for col in ["Repayment Of Debt", "Net Issuance Payments Of Debt"]:
+        if col in df.columns:
+            amort_col = col
+            break
+
+    if "Operating Cash Flow" in df.columns and interest_col:
+        desp_fin = df[interest_col].abs()
+        amort = df[amort_col].abs() if amort_col else pd.Series(0, index=df.index)
+        servico_divida = desp_fin + amort
+        result["DSCR"] = (df["Operating Cash Flow"] / servico_divida).replace([np.inf, -np.inf], np.nan)
+        result["Desp. Financeira"] = desp_fin
+        if amort_col:
+            result["Amortizacao Divida"] = amort
+
+    # Custo Médio da Dívida (%) = Despesas Financeiras / Dívida Bruta Média
+    if interest_col and "Total Debt" in df.columns:
+        desp_fin = df[interest_col].abs()
+        debt_avg = df["Total Debt"].rolling(2, min_periods=1).mean()
+        result["Custo Medio Divida (%)"] = (desp_fin / debt_avg * 100 * 4).replace([np.inf, -np.inf], np.nan)  # anualizar trimestre
+
+    # Dívida Líquida / FCO (LTM)
+    if "Net Debt" in df.columns and "Operating Cash Flow" in df.columns:
+        fco_ltm = df["Operating Cash Flow"].rolling(4, min_periods=4).sum()
+        result["Div.Liq/FCO"] = (df["Net Debt"] / fco_ltm).replace([np.inf, -np.inf], np.nan)
+
+    # Dívida Bruta / Ativo Total
+    if "Total Debt" in df.columns and "Total Assets" in df.columns:
+        result["Divida/Ativo (%)"] = (df["Total Debt"] / df["Total Assets"] * 100).replace([np.inf, -np.inf], np.nan)
+
+    # Emissão vs Amortização (fluxo de dívida)
+    if "Issuance Of Debt" in df.columns:
+        result["Emissao de Divida"] = df["Issuance Of Debt"]
+    if amort_col:
+        result["Pagamento de Divida"] = df[amort_col].abs() * -1
+
+    # Juros Pagos (Supplemental)
+    if "Interest Paid Supplemental Data" in df.columns:
+        result["Juros Pagos"] = df["Interest Paid Supplemental Data"].abs()
+
+    return result
+
+
+def compute_altman_z_score(df: pd.DataFrame) -> dict:
+    """
+    Calcula o Altman Z-Score (modelo para empresas não-financeiras de mercados emergentes).
+    Z' = 6.56*X1 + 3.26*X2 + 6.72*X3 + 1.05*X4
+    X1 = Capital de Giro / Ativo Total
+    X2 = Lucros Acumulados / Ativo Total
+    X3 = EBIT / Ativo Total
+    X4 = PL / Passivo Total
+    """
+    if df.empty or len(df) < 1:
+        return {"z_score": None, "zona": None, "components": {}}
+
+    latest = df.iloc[-1]
+    components = {}
+
+    ta = latest.get("Total Assets")
+    if ta is None or pd.isna(ta) or ta == 0:
+        return {"z_score": None, "zona": None, "components": {}}
+
+    # X1: Working Capital / Total Assets
+    wc = latest.get("Working Capital")
+    if wc is None or pd.isna(wc):
+        ca = latest.get("Current Assets", 0) or 0
+        cl = latest.get("Current Liabilities", 0) or 0
+        wc = ca - cl
+    x1 = wc / ta if ta else 0
+    components["X1 (Cap.Giro/Ativo)"] = x1
+
+    # X2: Retained Earnings / Total Assets
+    re = latest.get("Retained Earnings", 0) or 0
+    x2 = re / ta if ta else 0
+    components["X2 (Luc.Acum/Ativo)"] = x2
+
+    # X3: EBIT / Total Assets
+    ebit = latest.get("EBIT", 0) or 0
+    x3 = ebit / ta if ta else 0
+    components["X3 (EBIT/Ativo)"] = x3
+
+    # X4: Stockholders Equity / Total Liabilities
+    pl = latest.get("Stockholders Equity", 0) or 0
+    tl = latest.get("Total Liabilities Net Minority Interest", 0) or 0
+    x4 = pl / tl if tl and tl != 0 else 0
+    components["X4 (PL/Passivo)"] = x4
+
+    z = 6.56 * x1 + 3.26 * x2 + 6.72 * x3 + 1.05 * x4
+
+    if z > 2.6:
+        zona = "Segura"
+    elif z > 1.1:
+        zona = "Alerta"
+    else:
+        zona = "Perigo"
+
+    return {"z_score": z, "zona": zona, "components": components}
+
+
+def compute_dividend_analysis(df: pd.DataFrame) -> pd.DataFrame:
+    """Calcula métricas de dividendos e payout."""
+    result = df[["data"]].copy()
+
+    # Dividend Payout = Dividendos / Lucro Liquido
+    div_col = None
+    for col in ["Cash Dividends Paid", "Common Stock Dividend Paid"]:
+        if col in df.columns:
+            div_col = col
+            break
+
+    if div_col and "Net Income" in df.columns:
+        divs = df[div_col].abs()
+        result["Dividendos Pagos"] = divs
+        result["Payout (%)"] = (divs / df["Net Income"].abs() * 100).replace([np.inf, -np.inf], np.nan)
+
+    # FCF Payout = Dividendos / FCF
+    if div_col:
+        fcf_col = "Free Cash Flow" if "Free Cash Flow" in df.columns else None
+        if fcf_col:
+            result["FCF Payout (%)"] = (df[div_col].abs() / df[fcf_col].abs() * 100).replace([np.inf, -np.inf], np.nan)
+
+    # Dividendos / FCO
+    if div_col and "Operating Cash Flow" in df.columns:
+        result["Div/FCO (%)"] = (df[div_col].abs() / df["Operating Cash Flow"].abs() * 100).replace([np.inf, -np.inf], np.nan)
+
+    return result
+
+
 def compute_quarterly_multiples(ticker: str):
     """Calcula multiplos trimestrais historicos (versao legada)."""
     indicadores = ["Total Revenue", "Net Income", "EBITDA", "Stockholders Equity"]

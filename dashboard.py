@@ -23,6 +23,7 @@ from utils import (
     compute_alavancagem, compute_icr_cobertura, compute_liquidez,
     compute_rentabilidade, compute_divida_composicao, compute_balanco_patrimonial,
     compute_valuation_historico, compute_piotroski_score,
+    compute_credito_analysis, compute_altman_z_score, compute_dividend_analysis,
     IBOVESPA_TOP20, INDICATOR_LABELS, TICKER_NAMES, FINANCIAL_INDICATORS,
 )
 
@@ -295,7 +296,8 @@ st.sidebar.markdown("---")
 pagina = st.sidebar.radio(
     "Navegacao",
     ["Visao Geral", "Multiplos & Valuation", "Analise Individual",
-     "Analise Fundamentalista", "Score & Rating", "Comparacao"],
+     "Highlights Financeiros", "Analise Fundamentalista",
+     "Analise de Credito", "Score & Rating", "Comparacao"],
 )
 
 st.sidebar.markdown("---")
@@ -329,7 +331,7 @@ if df_fund.empty:
 # HELPERS PARA GRAFICOS PROFISSIONAIS
 # ============================================================
 
-def _chart_layout(fig, height=450, title=None, show_legend=True):
+def _chart_layout(fig, height=450, title=None, show_legend=True, is_subplots=False):
     """Aplica layout profissional padrao a qualquer grafico."""
     layout_args = dict(
         height=height,
@@ -338,13 +340,6 @@ def _chart_layout(fig, height=450, title=None, show_legend=True):
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=60, r=20, t=50 if title else 20, b=50),
         font=dict(family="Inter, sans-serif", size=13, color=TAG_TEXTO),
-        xaxis=dict(
-            dtick="M3", tickformat="%b/%Y",
-            gridcolor="rgba(0,0,0,0.05)", tickfont=dict(size=11),
-        ),
-        yaxis=dict(
-            gridcolor="rgba(0,0,0,0.06)", tickfont=dict(size=11),
-        ),
         legend=dict(
             orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
             font=dict(size=11), bgcolor="rgba(0,0,0,0)",
@@ -352,7 +347,16 @@ def _chart_layout(fig, height=450, title=None, show_legend=True):
     )
     if title:
         layout_args["title"] = dict(text=title, font=dict(size=15, color=TAG_VERMELHO_ESCURO), x=0)
+
     fig.update_layout(**layout_args)
+
+    # Aplicar xaxis/yaxis via update separado (compativel com subplots)
+    try:
+        fig.update_xaxes(gridcolor="rgba(0,0,0,0.05)", tickfont=dict(size=11))
+        fig.update_yaxes(gridcolor="rgba(0,0,0,0.06)", tickfont=dict(size=11))
+    except Exception:
+        pass
+
     return fig
 
 
@@ -778,9 +782,9 @@ def page_analise_fundamentalista():
                         mode="lines+markers", line=dict(color=margin_colors[i % len(margin_colors)], width=2.5),
                         marker=dict(size=6),
                     ), secondary_y=True)
-                _chart_layout(fig_rev, 450, "Receita e Margens")
-                fig_rev.update_yaxes(title_text="R$", tickformat=",.0f", secondary_y=False, titlefont=dict(size=11))
-                fig_rev.update_yaxes(title_text="%", secondary_y=True, titlefont=dict(size=11))
+                _chart_layout(fig_rev, 450, "Receita e Margens", is_subplots=True)
+                fig_rev.update_yaxes(title_text="R$", tickformat=",.0f", secondary_y=False, title_font=dict(size=11))
+                fig_rev.update_yaxes(title_text="%", secondary_y=True, title_font=dict(size=11))
                 st.plotly_chart(fig_rev, width="stretch")
 
             with col2:
@@ -1007,9 +1011,9 @@ def page_analise_fundamentalista():
                         name="Alavancagem", mode="lines+markers",
                         line=dict(color=TAG_VERDE, width=2.5), marker=dict(size=6),
                     ), secondary_y=True)
-                _chart_layout(fig_dp, 420, "Analise DuPont (3 fatores)")
-                fig_dp.update_yaxes(title_text="Margem (%)", secondary_y=False, titlefont=dict(size=11))
-                fig_dp.update_yaxes(title_text="Giro / Alav. (x)", secondary_y=True, titlefont=dict(size=11))
+                _chart_layout(fig_dp, 420, "Analise DuPont (3 fatores)", is_subplots=True)
+                fig_dp.update_yaxes(title_text="Margem (%)", secondary_y=False, title_font=dict(size=11))
+                fig_dp.update_yaxes(title_text="Giro / Alav. (x)", secondary_y=True, title_font=dict(size=11))
                 st.plotly_chart(fig_dp, width="stretch")
 
         if "Taxa Efetiva IR (%)" in df_rent.columns:
@@ -1234,7 +1238,561 @@ def page_score_rating():
 
 
 # ============================================================
-# PAGINA 6: COMPARACAO
+# PAGINA: HIGHLIGHTS FINANCEIROS (estilo painel executivo)
+# ============================================================
+
+def page_highlights():
+    st.title("Highlights Financeiros")
+    st.caption("Painel executivo: resumo visual dos principais indicadores financeiros")
+
+    ticker_options = {
+        f"{get_ticker_display(t)} - {TICKER_NAMES.get(t, t)}": t
+        for t in sorted(df_fund["ticker"].tolist())
+    }
+    selected_display = st.selectbox("Selecione a acao:", list(ticker_options.keys()), key="hl_ticker")
+    ticker = ticker_options[selected_display]
+
+    df_full = load_full_quarterly_data(ticker)
+    if df_full.empty:
+        st.warning("Sem dados financeiros trimestrais.")
+        return
+
+    df_rm = compute_receita_margens(df_full)
+    df_fc = compute_fluxo_caixa(df_full)
+    df_icr_data = compute_icr_cobertura(df_full)
+    df_alav = compute_alavancagem(df_full)
+    df_liq = compute_liquidez(df_full)
+    df_div = compute_divida_composicao(df_full)
+
+    # Formatar datas como anos para eixo X mais limpo
+    def _year_labels(df):
+        return df["data"].dt.strftime("%Y")
+
+    # === LINHA 1: Receita e Margens + Fluxos de Caixa ===
+    col1, col2 = st.columns(2)
+
+    with col1:
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        if "Receita Liquida" in df_rm.columns:
+            fig.add_trace(go.Bar(
+                x=_year_labels(df_rm), y=df_rm["Receita Liquida"],
+                name="Receita Liquida", marker_color="rgba(99, 13, 36, 0.2)",
+                text=df_rm["Receita Liquida"].apply(lambda x: format_brl(x) if pd.notna(x) else ""),
+                textposition="outside", textfont=dict(size=9),
+            ), secondary_y=False)
+        margin_map = {
+            "Margem EBITDA (%)": (TAG_VERMELHO, "Margem Ebitda"),
+            "Margem Liquida (%)": (TAG_VERDE, "Margem Liquida"),
+        }
+        for mc, (color, name) in margin_map.items():
+            if mc in df_rm.columns:
+                fig.add_trace(go.Scatter(
+                    x=_year_labels(df_rm), y=df_rm[mc], name=name,
+                    mode="lines+markers+text", line=dict(color=color, width=2.5),
+                    marker=dict(size=7),
+                    text=df_rm[mc].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else ""),
+                    textposition="top center", textfont=dict(size=9),
+                ), secondary_y=True)
+        _chart_layout(fig, 380, "Receita e Margens", is_subplots=True)
+        fig.update_yaxes(title_text="R$", tickformat=",.0f", secondary_y=False, title_font=dict(size=10))
+        fig.update_yaxes(title_text="%", secondary_y=True, title_font=dict(size=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        flow_cols = [c for c in ["FCO", "FCI", "FCF"] if c in df_fc.columns]
+        if flow_cols:
+            fig2 = go.Figure()
+            flow_colors = {"FCO": TAG_VERMELHO, "FCI": TAG_VERDE, "FCF": TAG_DOURADO}
+            for fc in flow_cols:
+                fig2.add_trace(go.Bar(
+                    x=_year_labels(df_fc), y=df_fc[fc], name=fc,
+                    marker_color=flow_colors.get(fc, TAG_VERMELHO),
+                ))
+            fig2.add_hline(y=0, line_dash="solid", line_color="gray", opacity=0.3)
+            _chart_layout(fig2, 380, "Fluxos de Caixa")
+            fig2.update_yaxes(tickformat=",.0f")
+            st.plotly_chart(fig2, use_container_width=True)
+
+    # === LINHA 2: ICR e FCO/EBITDA + Alavancagem ===
+    col3, col4 = st.columns(2)
+
+    with col3:
+        fig3 = make_subplots(specs=[[{"secondary_y": True}]])
+        if "Cobertura de Juros (ICR)" in df_icr_data.columns:
+            fig3.add_trace(go.Scatter(
+                x=_year_labels(df_icr_data), y=df_icr_data["Cobertura de Juros (ICR)"],
+                name="Cobertura de Juros", mode="lines+markers+text",
+                line=dict(color=TAG_VERMELHO, width=2.5), marker=dict(size=8),
+                text=df_icr_data["Cobertura de Juros (ICR)"].apply(lambda x: f"{x:.2f}" if pd.notna(x) else ""),
+                textposition="top center", textfont=dict(size=10),
+            ), secondary_y=False)
+        if "FCO/EBITDA (%)" in df_fc.columns:
+            # Alinhar dados ao ICR
+            fco_ebitda = df_fc["FCO/EBITDA (%)"].values[:len(df_icr_data)]
+            fig3.add_trace(go.Scatter(
+                x=_year_labels(df_icr_data)[:len(fco_ebitda)], y=fco_ebitda,
+                name="FCO/EBITDA", mode="lines+markers",
+                line=dict(color=TAG_VERDE, width=2, dash="dash"), marker=dict(size=6),
+            ), secondary_y=True)
+        icr_vals = df_icr_data.get("Cobertura de Juros (ICR)")
+        if icr_vals is not None and not icr_vals.dropna().empty:
+            for _, row in df_icr_data.iterrows():
+                v = row.get("Cobertura de Juros (ICR)")
+                if pd.notna(v) and v < 1:
+                    fig3.add_annotation(
+                        x=row["data"].strftime("%Y"), y=v,
+                        text="⚠", showarrow=False, font=dict(size=14, color=TAG_VERMELHO),
+                    )
+        _chart_layout(fig3, 380, "ICR e FCO/EBITDA", is_subplots=True)
+        fig3.update_yaxes(title_text="ICR (x)", secondary_y=False, title_font=dict(size=10))
+        fig3.update_yaxes(title_text="FCO/EBITDA (%)", secondary_y=True, title_font=dict(size=10))
+        st.plotly_chart(fig3, use_container_width=True)
+
+    with col4:
+        fig4 = make_subplots(specs=[[{"secondary_y": True}]])
+        if "Estrutura Capital (%)" in df_alav.columns:
+            fig4.add_trace(go.Bar(
+                x=_year_labels(df_alav), y=df_alav["Estrutura Capital (%)"],
+                name="Estrutura de Capital", marker_color="rgba(184, 134, 11, 0.7)",
+                text=df_alav["Estrutura Capital (%)"].apply(lambda x: f"{x:.0f}%" if pd.notna(x) else ""),
+                textposition="inside", textfont=dict(size=11, color="white"),
+            ), secondary_y=False)
+        if "Divida Liq/EBITDA" in df_alav.columns:
+            fig4.add_trace(go.Scatter(
+                x=_year_labels(df_alav), y=df_alav["Divida Liq/EBITDA"],
+                name="Divida Liquida/EBITDA", mode="lines+markers+text",
+                line=dict(color=TAG_VERMELHO, width=2.5), marker=dict(size=8, color=TAG_VERMELHO),
+                text=df_alav["Divida Liq/EBITDA"].apply(lambda x: f"{x:.2f}" if pd.notna(x) else ""),
+                textposition="top center", textfont=dict(size=10),
+            ), secondary_y=True)
+        _chart_layout(fig4, 380, "Alavancagem", is_subplots=True)
+        fig4.update_yaxes(title_text="Estrutura Capital (%)", secondary_y=False, title_font=dict(size=10))
+        fig4.update_yaxes(title_text="Div.Liq/EBITDA (x)", secondary_y=True, title_font=dict(size=10))
+        st.plotly_chart(fig4, use_container_width=True)
+
+    # === LINHA 3: Liquidez + Divida Bruta CP e LP ===
+    col5, col6 = st.columns(2)
+
+    with col5:
+        fig5 = go.Figure()
+        liq_stack = [c for c in ["Caixa e Equivalentes", "Contas a Receber", "Estoques"] if c in df_liq.columns]
+        liq_cols_map = {"Caixa e Equivalentes": TAG_VERDE, "Contas a Receber": TAG_DOURADO, "Estoques": TAG_VERMELHO}
+        for lc in liq_stack:
+            fig5.add_trace(go.Bar(
+                x=_year_labels(df_liq), y=df_liq[lc], name=lc,
+                marker_color=liq_cols_map.get(lc, TAG_VERMELHO),
+            ))
+        fig5.update_layout(barmode="stack")
+        _chart_layout(fig5, 380, "Liquidez")
+        fig5.update_yaxes(tickformat=",.0f")
+        st.plotly_chart(fig5, use_container_width=True)
+
+    with col6:
+        if "EFCP" in df_div.columns and "EFLP" in df_div.columns:
+            df_pct = df_div[["data", "EFCP", "EFLP"]].dropna()
+            if not df_pct.empty:
+                total = df_pct["EFCP"].abs() + df_pct["EFLP"].abs()
+                pct_cp = (df_pct["EFCP"].abs() / total * 100)
+                pct_lp = (df_pct["EFLP"].abs() / total * 100)
+                fig6 = go.Figure()
+                fig6.add_trace(go.Bar(
+                    x=_year_labels(df_pct), y=pct_cp, name="EFCP",
+                    marker_color=TAG_DOURADO,
+                    text=pct_cp.apply(lambda x: f"{x:.0f}%"), textposition="inside",
+                    textfont=dict(size=12, color="white"),
+                ))
+                fig6.add_trace(go.Bar(
+                    x=_year_labels(df_pct), y=pct_lp, name="EFLP",
+                    marker_color=TAG_VERMELHO,
+                    text=pct_lp.apply(lambda x: f"{x:.0f}%"), textposition="inside",
+                    textfont=dict(size=12, color="white"),
+                ))
+                _chart_layout(fig6, 380, "Divida Bruta = CP e LP")
+                fig6.update_layout(barmode="stack", yaxis=dict(range=[0, 100], ticksuffix="%"))
+                st.plotly_chart(fig6, use_container_width=True)
+
+    # === LINHA 4: KPIs resumo ===
+    st.markdown("---")
+    st.subheader("KPIs do Ultimo Trimestre")
+
+    df_rent = compute_rentabilidade(df_full)
+
+    def _last_val(df, col):
+        if col in df.columns:
+            v = df[col].dropna()
+            return v.iloc[-1] if not v.empty else None
+        return None
+
+    kpis = [
+        ("Margem Bruta", _last_val(df_rm, "Margem Bruta (%)"), "%", TAG_VERDE if (_last_val(df_rm, "Margem Bruta (%)") or 0) > 30 else TAG_DOURADO),
+        ("Margem EBITDA", _last_val(df_rm, "Margem EBITDA (%)"), "%", TAG_VERDE if (_last_val(df_rm, "Margem EBITDA (%)") or 0) > 20 else TAG_DOURADO),
+        ("Margem Liquida", _last_val(df_rm, "Margem Liquida (%)"), "%", TAG_VERDE if (_last_val(df_rm, "Margem Liquida (%)") or 0) > 10 else TAG_DOURADO),
+        ("ROE", _last_val(df_rent, "ROE (%)"), "%", TAG_VERDE if (_last_val(df_rent, "ROE (%)") or 0) > 15 else TAG_DOURADO),
+        ("ROA", _last_val(df_rent, "ROA (%)"), "%", TAG_VERDE if (_last_val(df_rent, "ROA (%)") or 0) > 5 else TAG_DOURADO),
+        ("Div.Liq/EBITDA", _last_val(df_alav, "Divida Liq/EBITDA"), "x", TAG_VERDE if (_last_val(df_alav, "Divida Liq/EBITDA") or 99) < 2 else TAG_VERMELHO),
+        ("Liq. Corrente", _last_val(df_liq, "Liquidez Corrente"), "x", TAG_VERDE if (_last_val(df_liq, "Liquidez Corrente") or 0) > 1.5 else TAG_DOURADO),
+        ("ICR", _last_val(df_icr_data, "Cobertura de Juros (ICR)"), "x", TAG_VERDE if (_last_val(df_icr_data, "Cobertura de Juros (ICR)") or 0) > 3 else TAG_VERMELHO),
+    ]
+
+    kpi_cols = st.columns(4)
+    for i, (name, val, suffix, color) in enumerate(kpis):
+        with kpi_cols[i % 4]:
+            if val is not None and not np.isnan(val):
+                st.markdown(_metric_card(name, f"{val:.2f}", suffix, color, color), unsafe_allow_html=True)
+            else:
+                st.markdown(_metric_card(name, "N/D", "", "#999", "#ccc"), unsafe_allow_html=True)
+
+
+# ============================================================
+# PAGINA: ANALISE DE CREDITO
+# ============================================================
+
+def page_analise_credito():
+    st.title("Analise de Credito")
+    st.caption("Indicadores para analistas de credito: DSCR, Altman Z-Score, Custo da Divida, Amortizacao, Payout")
+
+    ticker_options = {
+        f"{get_ticker_display(t)} - {TICKER_NAMES.get(t, t)}": t
+        for t in sorted(df_fund["ticker"].tolist())
+    }
+    selected_display = st.selectbox("Selecione a acao:", list(ticker_options.keys()), key="credit_ticker")
+    ticker = ticker_options[selected_display]
+
+    df_full = load_full_quarterly_data(ticker)
+    if df_full.empty:
+        st.warning("Sem dados financeiros trimestrais.")
+        return
+
+    tab_credit, tab_altman, tab_divpayout, tab_debt_flow = st.tabs([
+        "Cobertura & DSCR", "Altman Z-Score", "Dividendos & Payout", "Fluxo de Divida",
+    ])
+
+    # ===================== ABA 1: COBERTURA & DSCR =====================
+    with tab_credit:
+        df_cred = compute_credito_analysis(df_full)
+        df_icr_data = compute_icr_cobertura(df_full)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            # DSCR
+            if "DSCR" in df_cred.columns:
+                fig_dscr = go.Figure()
+                vals = df_cred["DSCR"]
+                colors = [TAG_VERDE if v and v > 1.5 else TAG_DOURADO if v and v > 1 else TAG_VERMELHO for v in vals]
+                fig_dscr.add_trace(go.Bar(
+                    x=df_cred["data"], y=vals, name="DSCR",
+                    marker_color=colors,
+                    text=vals.apply(lambda x: f"{x:.2f}x" if pd.notna(x) else ""),
+                    textposition="outside", textfont=dict(size=11, family="Inter"),
+                ))
+                fig_dscr.add_hline(y=1, line_dash="dash", line_color=TAG_VERMELHO, opacity=0.5,
+                                   annotation_text="Minimo (1x)", annotation_font=dict(size=10))
+                fig_dscr.add_hline(y=1.5, line_dash="dot", line_color=TAG_DOURADO, opacity=0.3,
+                                   annotation_text="Confortavel (1.5x)", annotation_font=dict(size=10))
+                _chart_layout(fig_dscr, 420, "DSCR (Debt Service Coverage Ratio)", False)
+                st.plotly_chart(fig_dscr, use_container_width=True)
+
+                # Alerta DSCR
+                last_dscr = vals.dropna()
+                if not last_dscr.empty:
+                    v = last_dscr.iloc[-1]
+                    if v > 1.5:
+                        st.success(f"DSCR = {v:.2f}x — Cobertura confortavel do servico da divida")
+                    elif v > 1:
+                        st.warning(f"DSCR = {v:.2f}x — Cobertura apertada, monitorar")
+                    else:
+                        st.error(f"DSCR = {v:.2f}x — Empresa nao cobre o servico da divida!")
+            else:
+                st.info("DSCR nao disponivel (sem dados de despesas financeiras).")
+
+        with col2:
+            # ICR + FCO/Desp.Fin
+            icr_cols = [c for c in ["Cobertura de Juros (ICR)", "FCO/Desp. Financeira", "EBIT/Desp. Financeira"]
+                        if c in df_icr_data.columns]
+            if icr_cols:
+                fig_icr = go.Figure()
+                colors_icr = [TAG_VERMELHO, TAG_DOURADO, TAG_VERDE]
+                for i, col in enumerate(icr_cols):
+                    fig_icr.add_trace(go.Scatter(
+                        x=df_icr_data["data"], y=df_icr_data[col],
+                        name=col.replace(" (ICR)", "").replace("Desp. Financeira", "Desp.Fin"),
+                        mode="lines+markers+text", line=dict(color=colors_icr[i], width=2.5),
+                        text=df_icr_data[col].apply(lambda x: f"{x:.1f}x" if pd.notna(x) else ""),
+                        textposition="top center", textfont=dict(size=9),
+                        marker=dict(size=7),
+                    ))
+                fig_icr.add_hline(y=1, line_dash="dash", line_color=TAG_VERMELHO, opacity=0.5,
+                                  annotation_text="Critico (1x)", annotation_font=dict(size=10))
+                _chart_layout(fig_icr, 420, "Cobertura de Juros")
+                st.plotly_chart(fig_icr, use_container_width=True)
+
+        st.markdown("---")
+
+        # Custo da Dívida e Dívida/Ativo
+        col3, col4 = st.columns(2)
+        with col3:
+            if "Custo Medio Divida (%)" in df_cred.columns:
+                fig_cd = go.Figure()
+                fig_cd.add_trace(go.Scatter(
+                    x=df_cred["data"], y=df_cred["Custo Medio Divida (%)"],
+                    name="Custo Medio", mode="lines+markers+text",
+                    line=dict(color=TAG_VERMELHO, width=2.5), marker=dict(size=7),
+                    text=df_cred["Custo Medio Divida (%)"].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else ""),
+                    textposition="top center", textfont=dict(size=9),
+                ))
+                _chart_layout(fig_cd, 350, "Custo Medio da Divida (%)", False)
+                st.plotly_chart(fig_cd, use_container_width=True)
+
+        with col4:
+            if "Divida/Ativo (%)" in df_cred.columns:
+                fig_da = go.Figure()
+                vals = df_cred["Divida/Ativo (%)"]
+                fig_da.add_trace(go.Bar(
+                    x=df_cred["data"], y=vals, name="Divida/Ativo",
+                    marker_color=[TAG_VERMELHO if v and v > 50 else TAG_DOURADO if v and v > 35 else TAG_VERDE for v in vals],
+                    text=vals.apply(lambda x: f"{x:.1f}%" if pd.notna(x) else ""),
+                    textposition="outside", textfont=dict(size=10),
+                ))
+                fig_da.add_hline(y=50, line_dash="dash", line_color=TAG_VERMELHO, opacity=0.4,
+                                 annotation_text="Alerta 50%", annotation_font=dict(size=10))
+                _chart_layout(fig_da, 350, "Divida Bruta / Ativo Total (%)", False)
+                st.plotly_chart(fig_da, use_container_width=True)
+
+        # Div.Liq/FCO
+        if "Div.Liq/FCO" in df_cred.columns:
+            st.markdown("---")
+            fig_dlf = go.Figure()
+            vals = df_cred["Div.Liq/FCO"]
+            fig_dlf.add_trace(go.Bar(
+                x=df_cred["data"], y=vals, name="Div.Liq/FCO",
+                marker_color=[TAG_VERMELHO if v and v > 4 else TAG_DOURADO if v and v > 2.5 else TAG_VERDE for v in vals],
+                text=vals.apply(lambda x: f"{x:.2f}x" if pd.notna(x) else ""),
+                textposition="outside", textfont=dict(size=10),
+            ))
+            fig_dlf.add_hline(y=3, line_dash="dash", line_color=TAG_VERMELHO, opacity=0.4,
+                              annotation_text="Alerta 3x", annotation_font=dict(size=10))
+            _chart_layout(fig_dlf, 320, "Divida Liquida / FCO (LTM)", False)
+            st.plotly_chart(fig_dlf, use_container_width=True)
+
+    # ===================== ABA 2: ALTMAN Z-SCORE =====================
+    with tab_altman:
+        z_result = compute_altman_z_score(df_full)
+        z_score = z_result["z_score"]
+        zona = z_result["zona"]
+        components = z_result["components"]
+
+        if z_score is not None:
+            col_z1, col_z2 = st.columns([1, 2])
+
+            with col_z1:
+                if zona == "Segura":
+                    z_color = TAG_VERDE
+                elif zona == "Alerta":
+                    z_color = TAG_DOURADO
+                else:
+                    z_color = TAG_VERMELHO
+
+                st.markdown(f"""
+                <div style="text-align: center; padding: 24px;">
+                    <div style="font-size: 4rem; font-weight: 700; color: {z_color}; line-height: 1;
+                                font-family: Inter, sans-serif;">{z_score:.2f}</div>
+                    <div style="margin-top: 8px;">
+                        <span class="score-badge" style="background: {z_color}; color: white;">
+                            Zona {zona.upper()}
+                        </span>
+                    </div>
+                    <div style="margin-top: 12px; font-size: 0.85rem; color: #666;">
+                        {"Z > 2.6 = Segura" if zona == "Segura" else "1.1 < Z < 2.6 = Alerta" if zona == "Alerta" else "Z < 1.1 = Perigo de falencia"}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with col_z2:
+                fig_z = go.Figure(go.Indicator(
+                    mode="gauge+number", value=z_score,
+                    domain={"x": [0, 1], "y": [0, 1]},
+                    gauge={
+                        "axis": {"range": [-2, 6], "tickwidth": 1, "tickfont": dict(size=11)},
+                        "bar": {"color": z_color, "thickness": 0.3},
+                        "steps": [
+                            {"range": [-2, 1.1], "color": "rgba(99, 13, 36, 0.12)"},
+                            {"range": [1.1, 2.6], "color": "rgba(184, 134, 11, 0.12)"},
+                            {"range": [2.6, 6], "color": "rgba(27, 122, 74, 0.12)"},
+                        ],
+                        "threshold": {"line": {"color": z_color, "width": 4}, "thickness": 0.75, "value": z_score},
+                    },
+                    number={"font": {"size": 36, "family": "Inter", "color": z_color}},
+                    title={"text": "Altman Z-Score (EM)", "font": {"size": 14, "family": "Inter"}},
+                ))
+                fig_z.update_layout(height=250, paper_bgcolor="rgba(0,0,0,0)", margin=dict(l=20, r=20, t=60, b=20))
+                st.plotly_chart(fig_z, use_container_width=True)
+
+            # Detalhamento componentes
+            st.markdown("---")
+            st.subheader("Decomposicao do Z-Score")
+
+            comp_data = []
+            weights = {"X1 (Cap.Giro/Ativo)": 6.56, "X2 (Luc.Acum/Ativo)": 3.26,
+                       "X3 (EBIT/Ativo)": 6.72, "X4 (PL/Passivo)": 1.05}
+            for comp_name, comp_val in components.items():
+                weight = weights.get(comp_name, 0)
+                contribution = comp_val * weight
+                comp_data.append({
+                    "Componente": comp_name,
+                    "Valor": f"{comp_val:.4f}",
+                    "Peso": f"{weight:.2f}",
+                    "Contribuicao": f"{contribution:.4f}",
+                })
+
+            if comp_data:
+                st.dataframe(pd.DataFrame(comp_data), use_container_width=True, hide_index=True)
+
+            st.markdown("""
+            **Interpretacao:**
+            - **Zona Segura (Z > 2.6)**: Baixo risco de inadimplencia
+            - **Zona de Alerta (1.1 < Z < 2.6)**: Risco moderado, monitorar
+            - **Zona de Perigo (Z < 1.1)**: Alto risco de inadimplencia/falencia
+            """)
+        else:
+            st.info("Dados insuficientes para calcular o Altman Z-Score.")
+
+    # ===================== ABA 3: DIVIDENDOS & PAYOUT =====================
+    with tab_divpayout:
+        df_divp = compute_dividend_analysis(df_full)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if "Dividendos Pagos" in df_divp.columns:
+                fig_dp = go.Figure()
+                fig_dp.add_trace(go.Bar(
+                    x=df_divp["data"], y=df_divp["Dividendos Pagos"],
+                    name="Dividendos", marker_color=TAG_VERDE,
+                    text=df_divp["Dividendos Pagos"].apply(lambda x: format_brl(x) if pd.notna(x) else ""),
+                    textposition="outside", textfont=dict(size=9),
+                ))
+                _chart_layout(fig_dp, 380, "Dividendos Pagos (Trimestral)", False)
+                fig_dp.update_yaxes(tickformat=",.0f")
+                st.plotly_chart(fig_dp, use_container_width=True)
+            else:
+                st.info("Sem dados de dividendos pagos.")
+
+        with col2:
+            payout_cols = [c for c in ["Payout (%)", "FCF Payout (%)", "Div/FCO (%)"] if c in df_divp.columns]
+            if payout_cols:
+                fig_pay = go.Figure()
+                pay_colors = [TAG_VERMELHO, TAG_DOURADO, TAG_VERDE]
+                for i, col in enumerate(payout_cols):
+                    fig_pay.add_trace(go.Scatter(
+                        x=df_divp["data"], y=df_divp[col], name=col,
+                        mode="lines+markers", line=dict(color=pay_colors[i], width=2.5),
+                        marker=dict(size=6),
+                    ))
+                fig_pay.add_hline(y=100, line_dash="dash", line_color=TAG_VERMELHO, opacity=0.4,
+                                  annotation_text="100%", annotation_font=dict(size=10))
+                _chart_layout(fig_pay, 380, "Indicadores de Payout (%)")
+                st.plotly_chart(fig_pay, use_container_width=True)
+            else:
+                st.info("Sem dados de payout.")
+
+        # Comentário analítico
+        if "Payout (%)" in df_divp.columns:
+            last_pay = df_divp["Payout (%)"].dropna()
+            if not last_pay.empty:
+                v = last_pay.iloc[-1]
+                st.markdown("---")
+                if v > 100:
+                    st.error(f"Payout = {v:.1f}% — Empresa distribuindo mais que o lucro liquido. Insustentavel.")
+                elif v > 75:
+                    st.warning(f"Payout = {v:.1f}% — Payout elevado, pouco espaco para reinvestimento.")
+                elif v > 25:
+                    st.success(f"Payout = {v:.1f}% — Payout saudavel, equilibrio entre dividendos e retencao.")
+                else:
+                    st.info(f"Payout = {v:.1f}% — Baixo payout, empresa priorizando reinvestimento.")
+
+    # ===================== ABA 4: FLUXO DE DIVIDA =====================
+    with tab_debt_flow:
+        df_cred = compute_credito_analysis(df_full)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            flow_debt = [c for c in ["Emissao de Divida", "Pagamento de Divida"] if c in df_cred.columns]
+            if flow_debt:
+                fig_fd = go.Figure()
+                fd_colors = {"Emissao de Divida": TAG_VERDE, "Pagamento de Divida": TAG_VERMELHO}
+                for fc in flow_debt:
+                    fig_fd.add_trace(go.Bar(
+                        x=df_cred["data"], y=df_cred[fc], name=fc,
+                        marker_color=fd_colors.get(fc, TAG_VERMELHO),
+                    ))
+                fig_fd.add_hline(y=0, line_dash="solid", line_color="gray", opacity=0.3)
+                _chart_layout(fig_fd, 380, "Emissao vs Amortizacao de Divida")
+                fig_fd.update_yaxes(tickformat=",.0f")
+                st.plotly_chart(fig_fd, use_container_width=True)
+            else:
+                st.info("Sem dados de emissao/amortizacao.")
+
+        with col2:
+            if "Juros Pagos" in df_cred.columns:
+                fig_jp = go.Figure()
+                fig_jp.add_trace(go.Bar(
+                    x=df_cred["data"], y=df_cred["Juros Pagos"],
+                    name="Juros Pagos", marker_color=TAG_VERMELHO,
+                    text=df_cred["Juros Pagos"].apply(lambda x: format_brl(x) if pd.notna(x) else ""),
+                    textposition="outside", textfont=dict(size=9),
+                ))
+                _chart_layout(fig_jp, 380, "Juros Pagos (Supplemental)", False)
+                fig_jp.update_yaxes(tickformat=",.0f")
+                st.plotly_chart(fig_jp, use_container_width=True)
+            elif "Desp. Financeira" in df_cred.columns:
+                fig_df = go.Figure()
+                fig_df.add_trace(go.Bar(
+                    x=df_cred["data"], y=df_cred["Desp. Financeira"],
+                    name="Desp. Financeira", marker_color=TAG_VERMELHO,
+                    text=df_cred["Desp. Financeira"].apply(lambda x: format_brl(x) if pd.notna(x) else ""),
+                    textposition="outside", textfont=dict(size=9),
+                ))
+                _chart_layout(fig_df, 380, "Despesas Financeiras", False)
+                fig_df.update_yaxes(tickformat=",.0f")
+                st.plotly_chart(fig_df, use_container_width=True)
+
+        # Resumo KPIs de crédito
+        st.markdown("---")
+        st.subheader("Resumo - Indicadores de Credito")
+
+        df_alav = compute_alavancagem(df_full)
+
+        def _lv(df, col):
+            if col in df.columns:
+                v = df[col].dropna()
+                return v.iloc[-1] if not v.empty else None
+            return None
+
+        credit_kpis = [
+            ("DSCR", _lv(df_cred, "DSCR"), "x", 1.5, 1, False),
+            ("ICR", _lv(compute_icr_cobertura(df_full), "Cobertura de Juros (ICR)"), "x", 3, 1.5, False),
+            ("Custo Divida", _lv(df_cred, "Custo Medio Divida (%)"), "%", 15, 20, True),
+            ("Div.Liq/EBITDA", _lv(df_alav, "Divida Liq/EBITDA"), "x", 2, 3, True),
+            ("Div.Liq/FCO", _lv(df_cred, "Div.Liq/FCO"), "x", 2.5, 4, True),
+            ("Divida/Ativo", _lv(df_cred, "Divida/Ativo (%)"), "%", 35, 50, True),
+            ("Div.Bruta/PL", _lv(df_alav, "Divida Bruta/PL"), "x", 1, 2, True),
+            ("Liq. Corrente", _lv(compute_liquidez(df_full), "Liquidez Corrente"), "x", 1.5, 1, False),
+        ]
+
+        kcols = st.columns(4)
+        for i, (name, value, suffix, good, warn, invert) in enumerate(credit_kpis):
+            with kcols[i % 4]:
+                if value is not None and not np.isnan(value):
+                    if invert:
+                        color = TAG_VERDE if value < good else (TAG_DOURADO if value < warn else TAG_VERMELHO)
+                    else:
+                        color = TAG_VERDE if value > good else (TAG_DOURADO if value > warn else TAG_VERMELHO)
+                    st.markdown(_metric_card(name, f"{value:.2f}", suffix, color, color), unsafe_allow_html=True)
+                else:
+                    st.markdown(_metric_card(name, "N/D", "", "#999", "#ccc"), unsafe_allow_html=True)
+
+
+# ============================================================
+# PAGINA: COMPARACAO
 # ============================================================
 
 def page_comparacao():
@@ -1325,8 +1883,12 @@ elif pagina == "Multiplos & Valuation":
     page_multiplos()
 elif pagina == "Analise Individual":
     page_analise_individual()
+elif pagina == "Highlights Financeiros":
+    page_highlights()
 elif pagina == "Analise Fundamentalista":
     page_analise_fundamentalista()
+elif pagina == "Analise de Credito":
+    page_analise_credito()
 elif pagina == "Score & Rating":
     page_score_rating()
 elif pagina == "Comparacao":
