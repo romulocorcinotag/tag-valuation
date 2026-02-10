@@ -315,13 +315,27 @@ def page_visao_geral():
             [1, TAG_VERMELHO_ESCURO],
         ]
 
+        # Preparar texto com valores reais formatados
+        real_values = df_heat[heatmap_available].values
+        text_matrix = []
+        for row in real_values:
+            text_row = []
+            for val in row:
+                if pd.notna(val):
+                    text_row.append(f"{val:.1f}")
+                else:
+                    text_row.append("")
+            text_matrix.append(text_row)
+
         fig_heat = go.Figure(data=go.Heatmap(
             z=df_zscore.values,
             x=labels_x,
             y=tickers_y,
             colorscale=tag_colorscale,
-            customdata=df_heat[heatmap_available].values,
-            texttemplate="%{customdata:.1f}",
+            customdata=real_values,
+            text=text_matrix,
+            texttemplate="%{text}",
+            textfont=dict(size=11, color="#2C1A1A"),
             hovertemplate="<b>%{y}</b><br>%{x}: %{customdata:.2f}<extra></extra>",
             showscale=True,
         ))
