@@ -1,0 +1,42 @@
+name: Atualizar Dados Yahoo Finance
+
+on:
+  schedule:
+    # 22:00 UTC = 19:00 Brasilia (UTC-3)
+    - cron: '0 22 * * 1-5'  # Seg a Sex
+  workflow_dispatch:  # Permite rodar manualmente pelo GitHub
+
+jobs:
+  atualizar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install yfinance pandas
+
+      - name: Executar extrator
+        run: python yahoo_finance_extractor.py
+
+      - name: Verificar se houve alteracao
+        id: check_changes
+        run: |
+          git diff --quiet yahoo_finance.db || echo "changed=true" >> $GITHUB_OUTPUT
+
+      - name: Commit e Push
+        if: steps.check_changes.outputs.changed == 'true'
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          git add yahoo_finance.db
+          git commit -m "Atualizacao automatica dos dados - $(date +'%d/%m/%Y %H:%M UTC')"
+          git push
